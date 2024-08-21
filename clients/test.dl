@@ -1,0 +1,84 @@
+#include "../clientlib/decompiler_imports.dl"
+#include "../clientlib/flows.dl"
+#include "../clientlib/guards.dl"
+#include "../clientlib/vulnerability_macros.dl"
+
+.decl LocalBlockEdgePredicateTrue(from: Block, to: Block, p: Variable, jumpi: Statement)
+.decl LocalBlockEdgePredicateFalse(from: Block, to: Block, p: Variable, jumpi: Statement)
+.decl LocalBlockEdgeUnconditional(from: Block, to: Block)
+.decl LocalBlockEdgeConditional(from: Block, to: Block)
+
+LocalBlockEdgePredicateTrue(from, to, p, jumpi) :-
+  LocalBlockEdge(from, to),
+  !FallthroughEdge(from, to),
+  Block_Tail(from, jumpi),
+  JUMPI(jumpi, _, p).
+
+LocalBlockEdgePredicateFalse(from, to, p, jumpi) :-
+  LocalBlockEdge(from, to),
+  FallthroughEdge(from, to),
+  Block_Tail(from, jumpi),
+  JUMPI(jumpi, _, p).
+
+LocalBlockEdgeConditional(from, to) :-
+  LocalBlockEdge(from, to),
+  Block_Tail(from, stmt),
+  JUMPI(stmt, _, _).
+
+LocalBlockEdgeUnconditional(from, to) :-
+  LocalBlockEdge(from, to),
+  !LocalBlockEdgeConditional(from, to).
+
+LocalBlockEdgeUnconditional(from, to) :-
+  LocalBlockEdge(from, to),
+  !Statement_Block(_, from).
+
+
+.decl UnconditionallyThrowingBlock(block: Block, terminateStmt: Statement)
+UnconditionallyThrowingBlock(block, terminateStmt) :-
+  ThrowBlock(block),
+  Block_Tail(block, terminateStmt).
+
+UnconditionallyThrowingBlock(block, terminateStmt) :-
+  UnconditionallyThrowingBlock(otherBlock, terminateStmt),
+  LocalBlockEdgeUnconditional(block, otherBlock).
+
+// Recognize asserts and their assert vars. The variable is the one
+// checked (as true or as false) in the assert. The statement is the
+// exact assert check. The ThrowBlock's last statement's opcode is
+// useful to distinguish "require" (REVERT) from "assert" (THROW)
+.decl AssertConditionVarTrue(stmt: Statement, var: Variable, opcode: Opcode, block: Block)
+AssertConditionVarTrue(stmt, var, opcode, block) :-
+  LocalBlockEdgePredicateFalse(_, block, var, stmt),
+  UnconditionallyThrowingBlock(block, terminateStmt),
+  Statement_Opcode(terminateStmt, opcode).
+
+.decl AssertConditionVarFalse(stmt: Statement, var: Variable, opcode: Opcode, block: Block)
+AssertConditionVarFalse(stmt, var, opcode, block) :-
+  LocalBlockEdgePredicateTrue(_, block, var, stmt),
+  UnconditionallyThrowingBlock(block, terminateStmt),
+  Statement_Opcode(terminateStmt, opcode).
+
+.decl AssertConditionVar(stmt: Statement, var: Variable)
+AssertConditionVar(stmt, var) :-
+  (AssertConditionVarFalse(stmt, var, _, _);
+   AssertConditionVarTrue(stmt, var, _, _)).
+
+.decl RevertCheck(stmt: Statement, revertblock: Block)
+RevertCheck(stmt, revertblock) :-
+  (AssertConditionVarFalse(stmt, _, "REVERT", revertblock);
+   AssertConditionVarTrue(stmt, _, "REVERT", revertblock)).
+
+
+// stmt: revert statement
+// storageloc: corresponding storage slot
+// Loadstmt: load statement
+// revertblock: block containing revert login
+.decl StorageInitRevertCheck(stmt: Statement, storageloc: Value, Loadstmt: Statement, revertblock: Block)
+StorageInitRevertCheck(stmt, storageloc, Loadstmt, revertblock) :-
+    LoadGlobalVariable(Loadstmt, storageloc, toVar),
+    RevertCheck(stmt, revertblock),
+    AssertConditionVar(stmt, var),
+    DataFlows(toVar, var).
+
+.output StorageInitRevertCheck

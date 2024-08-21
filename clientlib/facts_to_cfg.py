@@ -20,7 +20,7 @@ class Function:
         self.head_block = head_block
 
 def load_csv(path: str, seperator: str='\t') -> List[Union[str, List[str]]]:
-    with open(path) as f:
+    with open("./"+ path) as f:
         return [line.split(seperator) for line in f.read().splitlines()]
 
 def load_csv_map(path: str, seperator: str='\t', reverse: bool=False) -> Mapping[str, str]:

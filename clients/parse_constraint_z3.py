@@ -2,9 +2,9 @@ from web3 import Web3
 import re
 from z3 import *
 import time
+import argparse
 
 def query(storage_slot, idx_s = 0, idx_e = -1):
-    client = Web3(Web3.HTTPProvider("http://127.0.0.1:8536/"))
     storage_value = client.eth.get_storage_at(contract_address, storage_slot, block_identifier=block_number)
     #print(f'Storage at slot {storage_slot} at block {block_number}: {storage_value.hex()}')
     revert = storage_value[::-1]
@@ -12,12 +12,12 @@ def query(storage_slot, idx_s = 0, idx_e = -1):
     tmp = revert[idx_s:idx_e+1][::-1]
     return tmp.hex()
 
-def extract_var(cs):
+def extract_var(cs, suffix):
     var = []
     tokens = cs.split()
     storage_map = {}
     for token in tokens:
-        if token in ['(', ')']:
+        if token in reserved_tokens:
             continue
         if token.startswith("storage"):
             parts = token.split('_')
@@ -34,9 +34,10 @@ def extract_var(cs):
         if token.startswith("CALLDATALOAD"):
             if token not in var:
                 var.append(token)
+        # for function call args, append the suffix to differentiate
         if "arg" in token:
-            if token not in var:
-                var.append(token)
+            if token+suffix not in var:
+                var.append(token+suffix)
     return var, storage_map
 
 #TODO: Add support for other variables
@@ -103,13 +104,13 @@ def simple_parsing(cs):
     
     return cs
 
-def pre_evaluate(before):
+def pre_evaluate(before, suffix):
     message_dict = []
     for item in before:
         ms = item["message"]
         cs = item["constraint"]
         cs = simple_parsing(cs)
-        vars, storage_map = extract_var(cs)
+        vars, storage_map = extract_var(cs, suffix)
         for item in storage_map.keys():
             cs = cs.replace(item, storage_map[item])
         cs = cs.replace("const_", "")
@@ -187,13 +188,26 @@ def remove_duplicates(dict_list):
     return unique_list
 
 def main():
-    global contract_address, block_number, var_set
+    global reserved_tokens, contract_address, block_number, var_set, client
+    
+    parser = argparse.ArgumentParser(description="Evaluating equivalence of proxy implementations.")
+    parser.add_argument("--contract", type=str, help="contract address")
+    parser.add_argument("--block", type=int, help="block number to query")
+    parser.add_argument("--path1", type=str, help="path to the first log", default="./before.log")
+    parser.add_argument("--path2", type=str, help="path to the second log", default="./after.log")
+    args = parser.parse_args()
+
+    #parser.add_argument("operation", choices=["add", "subtract", "multiply", "divide"], help="Operation to perform")
+
     time_start = time.time()
+    reserved_tokens = ["(", ")", "+", "-", "*", "/", "||", "=="]
     client = Web3(Web3.HTTPProvider("http://127.0.0.1:8536/"))
-    contract_address = '0x244cf1DEF777a5030B93516fC74FC081221c1Ad6'
-    block_number = 15455180
-    before_log_path = './before.log'
-    after_log_path = './after.log'
+    #contract_address = '0x244cf1DEF777a5030B93516fC74FC081221c1Ad6'
+    #block_number = 15455180
+    contract_address = args.contract
+    block_number = args.block
+    before_log_path = args.path1
+    after_log_path = args.path2
     before_log_content = ''
     after_log_content = ''
     with open(before_log_path, 'r') as file:
@@ -205,8 +219,8 @@ def main():
     constraint_a = parse_constraints(after_log_content)
     constraint_a = remove_duplicates(constraint_a)
     # perform simple parsing and rpc storage slot
-    before, before_vars = pre_evaluate(constraint_b)
-    after, after_vars = pre_evaluate(constraint_a)
+    before, before_vars = pre_evaluate(constraint_b, "b")
+    after, after_vars = pre_evaluate(constraint_a, "a")
     var_set = set(before_vars + after_vars)
     # prove equivalence
     evaluate(before, after)
